@@ -1,8 +1,7 @@
 # NYC 311 service request data
 # Antoine Comets
+library(bigrquery)
 library(dplyr)
-library(chron)
-library(stringr)
 library(wordcloud)
 library(ggplot2)
 
@@ -12,66 +11,54 @@ library(ggplot2)
 # install_github('arilamstein/choroplethrZip@v1.5.0')
 library(choroplethrZip)
 
-# Read all the csv files into a list of data frames
-files <- list.files('input', '*.csv', full.names=T)
-data.list <- lapply(files, read.csv)
+#################
+# DATA DOWNLOAD #
+#################
 
-# Number of service calls in each year
-data.frame(year=2010:2017, n.complaints=sapply(data.list, nrow))
+nyc <- DBI::dbConnect(bigrquery::bigquery(),
+                      project = "bigquery-public-data",
+                      dataset = "new_york",
+                      billing = "kaggle-nyc-311")
 
-# Aggregate the data into a single data frame
-data <- do.call(rbind, data.list)
-
-str(data)
+data <- nyc %>%
+  tbl("311_service_requests") %>%
+  select(complaint_type, created_date, incident_zip) %>%
+  collect()
 
 
 ############
-# Cleaning #
+# CLEANING #
 ############
 
-# Clean complaint types
-clean.complaint.types <- sapply(data$Complaint.Type, str_to_title)
-clean.complaint.types[grepl("Advocate", clean.complaint.types)] <- "Advocate"
-clean.complaint.types[grepl("Broken *. Meter", clean.complaint.types)] <- "Broken Parking Meter"
-clean.complaint.types[grepl("Dead.* Tree", clean.complaint.types)] <- "Dead Tree"
-clean.complaint.types[grepl("Derelict Vehicle", clean.complaint.types)] <- "Derelict Vehicle"
-clean.complaint.types[grepl("Dof Parking", clean.complaint.types)] <- "DOF Parking"
-clean.complaint.types[grepl("Dof Property", clean.complaint.types)] <- "DOF Property"
-clean.complaint.types[grepl("Ferry", clean.complaint.types)] <- "Ferry"
-clean.complaint.types[grepl("Fire Alarm", clean.complaint.types)] <- "Fire Alarm"
-clean.complaint.types[grepl("For Hire Vehicle", clean.complaint.types)] <- "For Hire Vehicle"
-clean.complaint.types[grepl("Hazardous Material|Hazmat", clean.complaint.types)] <- "Hazardous Material"
-clean.complaint.types[grepl("Heat", clean.complaint.types)] <- "Heating"
-clean.complaint.types[grepl("Highway Sign", clean.complaint.types)] <- "Highway Sign"
-clean.complaint.types[grepl("Home Delivered Meal", clean.complaint.types)] <- "Home Delivered Meal"
-clean.complaint.types[grepl("Overflowing .* Basket|Adopt-A-Basket", clean.complaint.types)] <- "Overflowing Litter Basket"
-clean.complaint.types[grepl("Paint", clean.complaint.types)] <- "Paint/Plaster"
-clean.complaint.types[grepl("Plumbing|Leak", clean.complaint.types)] <- "Plumbing"
-clean.complaint.types[grepl("Street Sign", clean.complaint.types)] <- "Street Sign"
-clean.complaint.types[grepl("Sweeping", clean.complaint.types)] <- "Sweeping"
-data$Complaint.Type <- factor(clean.complaint.types)
+# Clean complaint type formats
+data <- data %>%
+  mutate(complaint_type = factor(gsub("[ /()-]+", "_", toupper(complaint_type))))
 
-# Convert dates created into POSIXct
-data$Created.Date <- as.POSIXct(data$Created.Date, format="%m/%d/%Y %I:%M:%S %p", tz="EST")
+# Clean rare complaint types
+t <- table(data$complaint_type)
+rare.complaint.types <- data.frame(complaint_type=names(t), freq=as.vector(t)) %>%
+  filter(freq < 50)
+data <- data %>%
+  filter(!(complaint_type %in% rare.complaint.types$complaint_type))
+data$complaint_type <- droplevels(data$complaint_type)
 
-# Keep only complaint types present in all 8 years
-data$Year <- years(data$Created.Date)
-common.types <- Reduce(intersect, lapply(split(data, data$Year), function(x) unique(x$Complaint.Type)))
-data <- data[data$Complaint.Type %in% common.types, ]
-data$Complaint.Type <- droplevels(data$Complaint.Type)
+# Clean ZIP codes and keep only those corresponding to NYC
+data$incident_zip <- strtrim(data$incident_zip, width = 5)
 
-# Clean ZIP codes and keep only from 10001 (Midtown) to 11697 (Rockaways)
-data$Incident.Zip <- strtrim(data$Incident.Zip, width=5)
-data <- data[data$Incident.Zip %in% c(10001:11697), ]
-data$Incident.Zip <- as.factor(data$Incident.Zip)
+zip.codes <- c(10001, 10002, 10003, 10004, 10005, 10006, 10007, 10009, 10010, 10011, 10012, 10013, 10014, 10016, 10017, 10018, 10019, 10020, 10021, 10022, 10023, 10024, 10025, 10026, 10027, 10028, 10029, 10030, 10031, 10032, 10033, 10034, 10035, 10036, 10037, 10038, 10039, 10040, 10044, 10065, 10069, 10075, 10103, 10110, 10111, 10112, 10115, 10119, 10128, 10152, 10153, 10154, 10162, 10165, 10167, 10168, 10169, 10170, 10171, 10172, 10173, 10174, 10177, 10199, 10271, 10278, 10279, 10280, 10282, 10301, 10302, 10303, 10304, 10305, 10306, 10307, 10308, 10309, 10310, 10311, 10312, 10314, 10451, 10452, 10453, 10454, 10455, 10456, 10457, 10458, 10459, 10460, 10461, 10462, 10463, 10464, 10465, 10466, 10467, 10468, 10469, 10470, 10471, 10472, 10473, 10474, 10475, 11004, 11005, 11101, 11102, 11103, 11104, 11105, 11106, 11109, 11201, 11203, 11204, 11205, 11206, 11207, 11208, 11209, 11210, 11211, 11212, 11213, 11214, 11215, 11216, 11217, 11218, 11219, 11220, 11221, 11222, 11223, 11224, 11225, 11226, 11228, 11229, 11230, 11231, 11232, 11233, 11234, 11235, 11236, 11237, 11238, 11239, 11351, 11354, 11355, 11356, 11357, 11358, 11359, 11360, 11361, 11362, 11363, 11364, 11365, 11366, 11367, 11368, 11369, 11370, 11371, 11372, 11373, 11374, 11375, 11377, 11378, 11379, 11385, 11411, 11412, 11413, 11414, 11415, 11416, 11417, 11418, 11419, 11420, 11421, 11422, 11423, 11424, 11425, 11426, 11427, 11428, 11429, 11430, 11432, 11433, 11434, 11435, 11436, 11451, 11691, 11692, 11693, 11694, 11697)
+
+data <- data %>%
+  filter(incident_zip %in% zip.codes)
+data$incident_zip <- as.factor(data$incident_zip)
 
 # Clean rare zip codes
-t <- table(data$Incident.Zip)
+t <- table(data$incident_zip)
 rare.zip.codes <- data.frame(zip=names(t), freq=as.vector(t)) %>%
   filter(freq < 50)
-data <- data[!(data$Incident.Zip %in% rare.zip.codes$zip), ]
-data$Incident.Zip <- droplevels(data$Incident.Zip)
-data$Complaint.Type <- droplevels(data$Complaint.Type)
+data <- data %>%
+  filter(!(incident_zip %in% rare.zip.codes$zip))
+data$incident_zip <- droplevels(data$incident_zip)
+data$complaint_type <- droplevels(data$complaint_type)
 
 
 ##############
@@ -79,13 +66,17 @@ data$Complaint.Type <- droplevels(data$Complaint.Type)
 ##############
 
 # Type frequencies
-v <- sort(table(data$Complaint.Type), decreasing=TRUE)
+v <- data %>%
+  select(complaint_type) %>%
+  table() %>%
+  sort(decreasing = TRUE)
+
 d <- data.frame(word=names(v), freq=as.vector(v))
 
 set.seed(42)
-wordcloud(words=d$word, freq=d$freq, min.freq=1,
-          max.words=200, random.order=FALSE, rot.per=0.35,
-          colors=brewer.pal(8, "Dark2"))
+wordcloud(words = d$word, freq = d$freq, min.freq = 1,
+          max.words = 200, random.order = FALSE, rot.per = 0.35,
+          colors = brewer.pal(8, "Dark2"))
 
 
 #############################
@@ -93,7 +84,7 @@ wordcloud(words=d$word, freq=d$freq, min.freq=1,
 #############################
 
 # Define a typology of neighborhoods
-typology <- table(data$Incident.Zip, data$Complaint.Type) %>%
+typology <- table(data$incident_zip, data$complaint_type) %>%
   prop.table(1) %>%
   as.data.frame.matrix
 
@@ -101,17 +92,16 @@ typology <- table(data$Incident.Zip, data$Complaint.Type) %>%
 library(factoextra)
 
 # Elbow method
-fviz_nbclust(typology, kmeans, nstart=100, method="wss") +
+fviz_nbclust(typology, kmeans, nstart = 100, method = "wss") +
   labs(subtitle = "Elbow method") +
   geom_vline(xintercept = 3, linetype = 2)
 
 # Silhouette method
-fviz_nbclust(typology, kmeans, nstart=100, method="silhouette") +
+fviz_nbclust(typology, kmeans, nstart = 100, method = "silhouette") +
   labs(subtitle="Silhouette method")
 
 # Gap statistic
-set.seed(42)
-fviz_nbclust(typology, kmeans, nstart=100, method="gap_stat", nboot=50) +
+fviz_nbclust(typology, kmeans, nstart = 100, method = "gap_stat", nboot = 50) +
   labs(subtitle = "Gap statistic method")
 
 
@@ -120,37 +110,32 @@ fviz_nbclust(typology, kmeans, nstart=100, method="gap_stat", nboot=50) +
 ##########################################
 
 # K-Means clustering
-set.seed(1)
-fit <- kmeans(typology, 4, nstart=100)
-typology <- typology %>% mutate(region=rownames(typology))
+fit <- kmeans(typology, 4, nstart = 100)
+typology <- typology %>%
+  mutate(region = rownames(typology))
 typology <- data.frame(typology, value=as.factor(fit$cluster))
 
 # Plot (zoom on zip codes in the 5 boroughs)
-data(zip.regions)
-county.names <- c('new york', 'kings', 'queens', 'bronx', 'richmond')
-zip.codes <- unique(zip.regions[zip.regions$state == 'new york' &
-                                zip.regions$county.name %in% county.names, ]$region)
-
 zip_choropleth(typology,
-               title="Typology of ZIP Codes",
-               legend='Clusters',
-               zip_zoom=intersect(typology$region, zip.codes))
+               title = "Typology of ZIP Codes",
+               legend = 'Clusters',
+               zip_zoom = typology$region)
 
 # Select 20 most common complaint types
 most.common.types <- head(d, 20)$word
 
 # Patterns within each cluster
 typology$region <- as.factor(typology$region)
-complete.data <- data %>% left_join(typology, by=c('Incident.Zip' = 'region'))
-patterns <- table(complete.data$value, complete.data$Complaint.Type) %>%
+complete.data <- data %>% left_join(typology, by = c('incident_zip' = 'region'))
+patterns <- table(complete.data$value, complete.data$complaint_type) %>%
   prop.table(1) %>%
   as.data.frame
 colnames(patterns) <- c('cluster', 'type', 'freq')
 patterns <- patterns[patterns$type %in% most.common.types, ]
 patterns$type <- droplevels(patterns$type)
 
-ggplot(patterns, aes(cluster, freq, fill=type)) +
-  geom_bar(stat="identity", position="dodge") + theme_bw() +
-  scale_fill_manual(values=colorRampPalette(brewer.pal(8, "Accent"))(20)) +
-  labs(title="Patterns of Top 20 Complaint Types by Cluster", x="Cluster", y="Frequency")
+ggplot(patterns, aes(cluster, freq, fill = type)) +
+  geom_bar(stat = "identity", position = "dodge") + theme_bw() +
+  scale_fill_manual(values = colorRampPalette(brewer.pal(8, "Accent"))(20)) +
+  labs(title = "Patterns of Top 20 Complaint Types by Cluster", x = "Cluster", y = "Frequency")
 
